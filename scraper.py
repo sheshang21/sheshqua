@@ -1,22 +1,30 @@
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import pandas as pd
 import time
 import re
+import pickle
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+
+COOKIES_FILE = 'screener_cookies.pkl'
+progress_lock = Lock()
 
 def parse_value(value_str):
-    """Parse numeric values, handle None/empty"""
     if not value_str or value_str.strip() == '' or value_str == 'None':
         return None
     try:
-        # Remove ₹ symbol and commas
         cleaned = value_str.replace('₹', '').replace(',', '').strip()
         return float(cleaned)
     except:
         return None
 
 def parse_yoy(yoy_str):
-    """Extract YOY percentage"""
     if not yoy_str:
         return None
     match = re.search(r'([⇡⇣])\s*(\d+)%', yoy_str)
@@ -25,135 +33,361 @@ def parse_yoy(yoy_str):
         return float(value) if direction == '⇡' else -float(value)
     return None
 
-def scrape_page(page_num):
-    """Scrape single page"""
+def save_cookies(driver):
+    """Save cookies to file"""
+    cookies = driver.get_cookies()
+    with open(COOKIES_FILE, 'wb') as f:
+        pickle.dump(cookies, f)
+    print(f"✅ Cookies saved to {COOKIES_FILE}")
+
+def load_cookies(driver):
+    """Load cookies from file"""
+    if os.path.exists(COOKIES_FILE):
+        with open(COOKIES_FILE, 'rb') as f:
+            cookies = pickle.load(f)
+        for cookie in cookies:
+            driver.add_cookie(cookie)
+        print(f"✅ Cookies loaded from {COOKIES_FILE}")
+        return True
+    return False
+
+def check_login_status(driver, force_reload=False):
+    """Check if user is logged in by visiting the results page"""
+    # Only reload if forced or not on screener.in domain
+    if force_reload or 'screener.in' not in driver.current_url:
+        driver.get("https://www.screener.in/results/latest/")
+        time.sleep(3)
+    else:
+        # Just check current page without reloading
+        time.sleep(1)
+    
+    # If redirected to register/login page, not logged in
+    if '/register/' in driver.current_url or '/login/' in driver.current_url:
+        return False
+    
+    # Check if we can see the results table
+    try:
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        tables = soup.find_all('table', class_='data-table')
+        if len(tables) > 0:
+            return True
+    except:
+        pass
+    
+    return False
+
+def manual_login(callback=None):
+    """Open browser for manual login and save cookies"""
+    chrome_options = Options()
+    # NOT headless - visible browser for login
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--window-size=1200,900')
+    
+    driver = webdriver.Chrome(options=chrome_options)
+    
+    try:
+        # Try loading existing cookies first
+        driver.get("https://www.screener.in")
+        time.sleep(2)
+        
+        if load_cookies(driver):
+            if check_login_status(driver, force_reload=True):
+                print("✅ Already logged in with saved cookies!")
+                save_cookies(driver)  # Refresh cookies
+                driver.quit()
+                return True
+        
+        # Need manual login
+        print("🔐 Opening browser for login...")
+        driver.get("https://www.screener.in/login/")
+        
+        if callback:
+            callback("Please login in the browser window that just opened...")
+        
+        print("\n" + "="*60)
+        print("PLEASE LOGIN TO SCREENER.IN IN THE BROWSER WINDOW")
+        print("="*60)
+        print("1. Enter your email/username and password")
+        print("2. Click 'Login'")
+        print("3. Wait until you see the main page")
+        print("4. The browser will close automatically once login is detected")
+        print("="*60 + "\n")
+        
+        # Wait for login (check every 5 seconds for up to 5 minutes)
+        for i in range(60):
+            time.sleep(5)
+            if check_login_status(driver, force_reload=False):
+                print("✅ Login successful!")
+                save_cookies(driver)
+                driver.quit()
+                return True
+            print(f"⏳ Waiting for login... ({i*5}s)")
+        
+        print("❌ Login timeout. Please try again.")
+        driver.quit()
+        return False
+        
+    except Exception as e:
+        print(f"❌ Error during login: {e}")
+        driver.quit()
+        return False
+
+def verify_login():
+    """Verify if we have valid login cookies"""
+    if not os.path.exists(COOKIES_FILE):
+        return False
+    
+    driver = init_driver(headless=True)
+    try:
+        is_logged_in = check_login_status(driver, force_reload=True)
+        driver.quit()
+        return is_logged_in
+    except:
+        driver.quit()
+        return False
+
+def init_driver(headless=True):
+    """Initialize driver with cookies"""
+    chrome_options = Options()
+    
+    if headless:
+        chrome_options.add_argument('--headless')
+    
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--window-size=1920,1080')
+    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    
+    driver = webdriver.Chrome(options=chrome_options)
+    
+    # Load cookies if they exist
+    driver.get("https://www.screener.in")
+    time.sleep(2)
+    load_cookies(driver)
+    
+    return driver
+
+def scrape_page(driver, page_num, delay=5):
     url = f"https://www.screener.in/results/latest/?p={page_num}" if page_num > 1 else "https://www.screener.in/results/latest/"
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+    print(f"Fetching: {url}")
+    driver.get(url)
+    time.sleep(8)  # Wait for JS
     
-    print(f"Fetching URL: {url}")
-    response = requests.get(url, headers=headers, timeout=30)
-    response.raise_for_status()
-    print(f"Got response: {response.status_code}")
-    
-    soup = BeautifulSoup(response.content, 'html.parser')
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
     companies = []
     
-    # Find all company blocks
-    blocks = soup.find_all('div', class_='flex-row flex-space-between flex-align-center margin-top-32')
-    print(f"Found {len(blocks)} company blocks")
+    # Try different selectors
+    tables = soup.find_all('table', class_='data-table')
+    print(f"Found {len(tables)} tables")
     
-    for idx, block in enumerate(blocks):
+    if len(tables) == 0:
+        print("NO TABLES FOUND - Check page_{page_num}.html to see what loaded")
+        return []
+    
+    # Each table represents one company
+    for idx, table in enumerate(tables):
         try:
             company_data = {}
             
-            # Company name
-            company_link = block.find('a', class_='font-weight-500')
-            if company_link:
-                company_data['Company'] = company_link.find('span').text.strip()
-                print(f"  {idx+1}. {company_data['Company']}")
+            # Go backwards to find company name
+            prev_element = table.find_previous('a', class_='font-weight-500')
+            if prev_element:
+                span = prev_element.find('span')
+                if span:
+                    company_data['Company'] = span.text.strip()
+                    print(f"  {idx+1}. {company_data['Company']}")
             
-            # Price, Market Cap, PE
-            price_span = block.find('span', string='Price')
-            if price_span:
-                price_value = price_span.find_next('span', class_='strong')
-                if price_value:
-                    company_data['Price'] = parse_value(price_value.text)
+            # Find metrics div (goes backwards from table)
+            metrics_div = table.find_previous('div', class_='font-size-14')
+            if metrics_div:
+                spans = metrics_div.find_all('span', class_='sub')
+                for span in spans:
+                    text = span.get_text()
+                    strong = span.find('span', class_='strong')
+                    if strong:
+                        if 'Price' in text:
+                            company_data['Price'] = parse_value(strong.text)
+                        elif 'M.Cap' in text:
+                            company_data['Market_Cap'] = parse_value(strong.text)
+                        elif 'PE' in text:
+                            company_data['PE'] = parse_value(strong.text)
             
-            mcap_span = block.find('span', attrs={'data-mcap': ''})
-            if mcap_span:
-                mcap_value = mcap_span.find('span', class_='strong')
-                if mcap_value:
-                    company_data['Market_Cap'] = parse_value(mcap_value.text)
+            # Parse table
+            rows = table.find('tbody').find_all('tr')
+            if len(rows) < 4:
+                continue
             
-            pe_spans = block.find_all('span', class_='sub')
-            for span in pe_spans:
-                if 'PE' in span.get_text():
-                    pe_value = span.find('span', class_='strong')
-                    if pe_value:
-                        company_data['PE'] = parse_value(pe_value.text)
+            # Sales
+            cells = rows[0].find_all('td')
+            company_data['Sales_YOY'] = parse_yoy(cells[1].text)
+            company_data['Sales_Dec25'] = parse_value(cells[2].text)
+            company_data['Sales_Sep25'] = parse_value(cells[3].text)
+            company_data['Sales_Dec24'] = parse_value(cells[4].text) if len(cells) > 4 else None
             
-            # Find corresponding table
-            table = block.find_next('table', class_='data-table')
-            if table:
-                rows = table.find('tbody').find_all('tr')
-                
-                # Sales row
-                sales_row = rows[0]
-                cells = sales_row.find_all('td')
-                company_data['Sales_YOY'] = parse_yoy(cells[1].text)
-                company_data['Sales_Dec25'] = parse_value(cells[2].text)
-                company_data['Sales_Sep25'] = parse_value(cells[3].text)
-                company_data['Sales_Dec24'] = parse_value(cells[4].text) if len(cells) > 4 else None
-                
-                # EBIDT row
-                ebidt_row = rows[1]
-                cells = ebidt_row.find_all('td')
-                company_data['EBIDT_YOY'] = parse_yoy(cells[1].text)
-                company_data['EBIDT_Dec25'] = parse_value(cells[2].text)
-                company_data['EBIDT_Sep25'] = parse_value(cells[3].text)
-                company_data['EBIDT_Dec24'] = parse_value(cells[4].text) if len(cells) > 4 else None
-                
-                # Net Profit row
-                profit_row = rows[2]
-                cells = profit_row.find_all('td')
-                company_data['NetProfit_YOY'] = parse_yoy(cells[1].text)
-                company_data['NetProfit_Dec25'] = parse_value(cells[2].text)
-                company_data['NetProfit_Sep25'] = parse_value(cells[3].text)
-                company_data['NetProfit_Dec24'] = parse_value(cells[4].text) if len(cells) > 4 else None
-                
-                # EPS row
-                eps_row = rows[3]
-                cells = eps_row.find_all('td')
-                company_data['EPS_YOY'] = parse_yoy(cells[1].text)
-                company_data['EPS_Dec25'] = parse_value(cells[2].text)
-                company_data['EPS_Sep25'] = parse_value(cells[3].text)
-                company_data['EPS_Dec24'] = parse_value(cells[4].text) if len(cells) > 4 else None
+            # EBIDT
+            cells = rows[1].find_all('td')
+            company_data['EBIDT_YOY'] = parse_yoy(cells[1].text)
+            company_data['EBIDT_Dec25'] = parse_value(cells[2].text)
+            company_data['EBIDT_Sep25'] = parse_value(cells[3].text)
+            company_data['EBIDT_Dec24'] = parse_value(cells[4].text) if len(cells) > 4 else None
+            
+            # Net Profit
+            cells = rows[2].find_all('td')
+            company_data['NetProfit_YOY'] = parse_yoy(cells[1].text)
+            company_data['NetProfit_Dec25'] = parse_value(cells[2].text)
+            company_data['NetProfit_Sep25'] = parse_value(cells[3].text)
+            company_data['NetProfit_Dec24'] = parse_value(cells[4].text) if len(cells) > 4 else None
+            
+            # EPS
+            cells = rows[3].find_all('td')
+            company_data['EPS_YOY'] = parse_yoy(cells[1].text)
+            company_data['EPS_Dec25'] = parse_value(cells[2].text)
+            company_data['EPS_Sep25'] = parse_value(cells[3].text)
+            company_data['EPS_Dec24'] = parse_value(cells[4].text) if len(cells) > 4 else None
             
             companies.append(company_data)
+            
         except Exception as e:
-            print(f"Error parsing company {idx+1}: {e}")
+            print(f"Error on table {idx}: {e}")
             continue
     
-    print(f"Successfully parsed {len(companies)} companies")
+    print(f"Parsed {len(companies)} companies")
+    time.sleep(delay)  # Configurable delay between pages
     return companies
 
-def scrape_all_pages(pages_list=None, progress_callback=None):
-    """Scrape specified pages with rate limiting"""
-    if pages_list is None:
-        pages_list = list(range(1, 81))  # Default: all pages
+def worker_scrape_pages(worker_id, pages_to_scrape, delay, progress_callback=None, total_pages=0):
+    """Worker function to scrape assigned pages"""
+    driver = init_driver(headless=True)
+    worker_data = []
     
-    all_data = []
+    try:
+        for idx, page_num in enumerate(pages_to_scrape, 1):
+            try:
+                print(f"[Worker {worker_id}] Page {page_num}")
+                companies = scrape_page(driver, page_num, delay=delay)
+                worker_data.extend(companies)
+                
+                if progress_callback:
+                    with progress_lock:
+                        progress_callback(1, total_pages)
+                    
+            except Exception as e:
+                print(f"[Worker {worker_id}] Error on page {page_num}: {e}")
+                time.sleep(10)
+                continue
+    finally:
+        driver.quit()
+    
+    return worker_data
+
+def scrape_all_pages(pages_list=None, progress_callback=None, num_workers=1, delay=5):
+    """
+    Scrape pages with parallel workers
+    
+    Args:
+        pages_list: List of page numbers to scrape
+        progress_callback: Callback function(completed, total)
+        num_workers: Number of parallel workers (1-5 recommended)
+        delay: Delay in seconds between page requests
+    """
+    if pages_list is None:
+        pages_list = list(range(1, 81))
+    
     total_pages = len(pages_list)
     
-    for idx, page_num in enumerate(pages_list, 1):
+    if num_workers == 1:
+        # Single worker mode (original behavior)
+        driver = init_driver()
+        all_data = []
+        
         try:
-            print(f"Scraping page {page_num} ({idx}/{total_pages})...")
-            companies = scrape_page(page_num)
-            all_data.extend(companies)
-            
-            if progress_callback:
-                progress_callback(idx, total_pages)
-            
-            # Rate limiting: 5 seconds between requests (strict)
-            if idx < total_pages:
-                time.sleep(5)
-                
-        except Exception as e:
-            print(f"Error on page {page_num}: {e}")
-            if '429' in str(e):
-                print("Rate limited - waiting 30 seconds...")
-                time.sleep(30)  # Long wait for rate limit
-            else:
-                time.sleep(10)  # Longer wait on other errors
-            continue
+            for idx, page_num in enumerate(pages_list, 1):
+                try:
+                    print(f"\nPage {page_num} ({idx}/{total_pages})")
+                    companies = scrape_page(driver, page_num, delay=delay)
+                    all_data.extend(companies)
+                    
+                    if progress_callback:
+                        progress_callback(idx, total_pages)
+                        
+                except Exception as e:
+                    print(f"Error on page {page_num}: {e}")
+                    time.sleep(10)
+                    continue
+        finally:
+            driver.quit()
+        
+        return pd.DataFrame(all_data)
     
-    return pd.DataFrame(all_data)
+    else:
+        # Multi-worker mode
+        print(f"\n🚀 Starting {num_workers} parallel workers...")
+        
+        # Distribute pages evenly across workers (ensures no overlap/skip)
+        # Use chunks instead of modulo for better distribution
+        chunk_size = max(1, len(pages_list) // num_workers)
+        remainder = len(pages_list) % num_workers
+        
+        worker_pages = []
+        start_idx = 0
+        
+        for i in range(num_workers):
+            # Add one extra page to first 'remainder' workers
+            current_chunk_size = chunk_size + (1 if i < remainder else 0)
+            end_idx = start_idx + current_chunk_size
+            
+            if start_idx < len(pages_list):
+                worker_pages.append(pages_list[start_idx:end_idx])
+            else:
+                worker_pages.append([])
+            
+            start_idx = end_idx
+        
+        # Show distribution
+        for i, pages in enumerate(worker_pages, 1):
+            if pages:
+                print(f"Worker {i}: {len(pages)} pages - {pages[:5]}{'...' if len(pages) > 5 else ''}")
+            else:
+                print(f"Worker {i}: 0 pages - (idle)")
+        
+        all_data = []
+        completed_pages = [0]  # Mutable counter
+        
+        def update_progress(increment, total):
+            completed_pages[0] += increment
+            if progress_callback:
+                progress_callback(completed_pages[0], total)
+        
+        # Run workers in parallel
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = []
+            for worker_id, pages in enumerate(worker_pages, 1):
+                if pages:  # Only submit if worker has pages
+                    future = executor.submit(
+                        worker_scrape_pages, 
+                        worker_id, 
+                        pages, 
+                        delay,
+                        update_progress,
+                        total_pages
+                    )
+                    futures.append(future)
+            
+            # Collect results as they complete
+            for future in as_completed(futures):
+                try:
+                    worker_data = future.result()
+                    all_data.extend(worker_data)
+                except Exception as e:
+                    print(f"Worker failed: {e}")
+        
+        print(f"\n✅ All workers completed. Total companies: {len(all_data)}")
+        return pd.DataFrame(all_data)
 
 if __name__ == "__main__":
-    # Test with specific pages
-    df = scrape_all_pages(pages_list=[1, 2, 3])
+    df = scrape_all_pages(pages_list=[1])
     print(df.head())
-    print(f"Total companies: {len(df)}")
+    print(f"Total: {len(df)}")
