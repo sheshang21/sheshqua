@@ -1,5 +1,6 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -46,26 +47,25 @@ def load_cookies(driver):
         with open(COOKIES_FILE, 'rb') as f:
             cookies = pickle.load(f)
         for cookie in cookies:
-            driver.add_cookie(cookie)
+            try:
+                driver.add_cookie(cookie)
+            except:
+                pass
         print(f"✅ Cookies loaded from {COOKIES_FILE}")
         return True
     return False
 
 def check_login_status(driver, force_reload=False):
     """Check if user is logged in by visiting the results page"""
-    # Only reload if forced or not on screener.in domain
     if force_reload or 'screener.in' not in driver.current_url:
         driver.get("https://www.screener.in/results/latest/")
         time.sleep(3)
     else:
-        # Just check current page without reloading
         time.sleep(1)
     
-    # If redirected to register/login page, not logged in
     if '/register/' in driver.current_url or '/login/' in driver.current_url:
         return False
     
-    # Check if we can see the results table
     try:
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         tables = soup.find_all('table', class_='data-table')
@@ -76,91 +76,51 @@ def check_login_status(driver, force_reload=False):
     
     return False
 
-def manual_login(callback=None):
-    """Open browser for manual login and save cookies"""
-    chrome_options = Options()
-    # NOT headless - visible browser for login
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--window-size=1200,900')
-    
-    driver = webdriver.Chrome(options=chrome_options)
-    
-    try:
-        # Try loading existing cookies first
-        driver.get("https://www.screener.in")
-        time.sleep(2)
-        
-        if load_cookies(driver):
-            if check_login_status(driver, force_reload=True):
-                print("✅ Already logged in with saved cookies!")
-                save_cookies(driver)  # Refresh cookies
-                driver.quit()
-                return True
-        
-        # Need manual login
-        print("🔐 Opening browser for login...")
-        driver.get("https://www.screener.in/login/")
-        
-        if callback:
-            callback("Please login in the browser window that just opened...")
-        
-        print("\n" + "="*60)
-        print("PLEASE LOGIN TO SCREENER.IN IN THE BROWSER WINDOW")
-        print("="*60)
-        print("1. Enter your email/username and password")
-        print("2. Click 'Login'")
-        print("3. Wait until you see the main page")
-        print("4. The browser will close automatically once login is detected")
-        print("="*60 + "\n")
-        
-        # Wait for login (check every 5 seconds for up to 5 minutes)
-        for i in range(60):
-            time.sleep(5)
-            if check_login_status(driver, force_reload=False):
-                print("✅ Login successful!")
-                save_cookies(driver)
-                driver.quit()
-                return True
-            print(f"⏳ Waiting for login... ({i*5}s)")
-        
-        print("❌ Login timeout. Please try again.")
-        driver.quit()
-        return False
-        
-    except Exception as e:
-        print(f"❌ Error during login: {e}")
-        driver.quit()
-        return False
-
-def verify_login():
-    """Verify if we have valid login cookies"""
-    if not os.path.exists(COOKIES_FILE):
-        return False
-    
-    driver = init_driver(headless=True)
-    try:
-        is_logged_in = check_login_status(driver, force_reload=True)
-        driver.quit()
-        return is_logged_in
-    except:
-        driver.quit()
-        return False
-
-def init_driver(headless=True):
-    """Initialize driver with cookies"""
+def get_chrome_options():
+    """Get Chrome options configured for Streamlit Cloud"""
     chrome_options = Options()
     
-    if headless:
-        chrome_options.add_argument('--headless')
-    
+    # Essential headless flags
+    chrome_options.add_argument('--headless=new')
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--window-size=1920,1080')
-    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    chrome_options.add_argument('--disable-software-rasterizer')
+    chrome_options.add_argument('--disable-extensions')
     
-    driver = webdriver.Chrome(options=chrome_options)
+    # Additional stability flags
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    chrome_options.add_argument('--window-size=1920,1080')
+    chrome_options.add_argument('user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    
+    # Memory optimization
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--single-process')
+    chrome_options.add_argument('--disable-setuid-sandbox')
+    
+    return chrome_options
+
+def init_driver(headless=True):
+    """Initialize driver with proper configuration for Streamlit Cloud"""
+    chrome_options = get_chrome_options()
+    
+    try:
+        # Try using webdriver-manager first
+        from webdriver_manager.chrome import ChromeDriverManager
+        from webdriver_manager.core.os_manager import ChromeType
+        
+        service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    except Exception as e:
+        print(f"WebDriver Manager failed: {e}")
+        try:
+            # Fallback: try system chromium-driver
+            service = Service('/usr/bin/chromedriver')
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        except Exception as e2:
+            print(f"System chromedriver failed: {e2}")
+            # Last resort: let selenium find it
+            driver = webdriver.Chrome(options=chrome_options)
     
     # Load cookies if they exist
     driver.get("https://www.screener.in")
@@ -169,30 +129,41 @@ def init_driver(headless=True):
     
     return driver
 
+def verify_login():
+    """Verify if we have valid login cookies"""
+    if not os.path.exists(COOKIES_FILE):
+        return False
+    
+    try:
+        driver = init_driver(headless=True)
+        is_logged_in = check_login_status(driver, force_reload=True)
+        driver.quit()
+        return is_logged_in
+    except Exception as e:
+        print(f"Login verification error: {e}")
+        return False
+
 def scrape_page(driver, page_num, delay=5):
     url = f"https://www.screener.in/results/latest/?p={page_num}" if page_num > 1 else "https://www.screener.in/results/latest/"
     
     print(f"Fetching: {url}")
     driver.get(url)
-    time.sleep(8)  # Wait for JS
+    time.sleep(8)
     
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     companies = []
     
-    # Try different selectors
     tables = soup.find_all('table', class_='data-table')
     print(f"Found {len(tables)} tables")
     
     if len(tables) == 0:
-        print("NO TABLES FOUND - Check page_{page_num}.html to see what loaded")
+        print(f"NO TABLES FOUND on page {page_num}")
         return []
     
-    # Each table represents one company
     for idx, table in enumerate(tables):
         try:
             company_data = {}
             
-            # Go backwards to find company name
             prev_element = table.find_previous('a', class_='font-weight-500')
             if prev_element:
                 span = prev_element.find('span')
@@ -200,7 +171,6 @@ def scrape_page(driver, page_num, delay=5):
                     company_data['Company'] = span.text.strip()
                     print(f"  {idx+1}. {company_data['Company']}")
             
-            # Find metrics div (goes backwards from table)
             metrics_div = table.find_previous('div', class_='font-size-14')
             if metrics_div:
                 spans = metrics_div.find_all('span', class_='sub')
@@ -215,7 +185,6 @@ def scrape_page(driver, page_num, delay=5):
                         elif 'PE' in text:
                             company_data['PE'] = parse_value(strong.text)
             
-            # Parse table
             rows = table.find('tbody').find_all('tr')
             if len(rows) < 4:
                 continue
@@ -255,7 +224,7 @@ def scrape_page(driver, page_num, delay=5):
             continue
     
     print(f"Parsed {len(companies)} companies")
-    time.sleep(delay)  # Configurable delay between pages
+    time.sleep(delay)
     return companies
 
 def worker_scrape_pages(worker_id, pages_to_scrape, delay, progress_callback=None, total_pages=0):
@@ -299,7 +268,6 @@ def scrape_all_pages(pages_list=None, progress_callback=None, num_workers=1, del
     total_pages = len(pages_list)
     
     if num_workers == 1:
-        # Single worker mode (original behavior)
         driver = init_driver()
         all_data = []
         
@@ -323,11 +291,8 @@ def scrape_all_pages(pages_list=None, progress_callback=None, num_workers=1, del
         return pd.DataFrame(all_data)
     
     else:
-        # Multi-worker mode
         print(f"\n🚀 Starting {num_workers} parallel workers...")
         
-        # Distribute pages evenly across workers (ensures no overlap/skip)
-        # Use chunks instead of modulo for better distribution
         chunk_size = max(1, len(pages_list) // num_workers)
         remainder = len(pages_list) % num_workers
         
@@ -335,7 +300,6 @@ def scrape_all_pages(pages_list=None, progress_callback=None, num_workers=1, del
         start_idx = 0
         
         for i in range(num_workers):
-            # Add one extra page to first 'remainder' workers
             current_chunk_size = chunk_size + (1 if i < remainder else 0)
             end_idx = start_idx + current_chunk_size
             
@@ -346,26 +310,22 @@ def scrape_all_pages(pages_list=None, progress_callback=None, num_workers=1, del
             
             start_idx = end_idx
         
-        # Show distribution
         for i, pages in enumerate(worker_pages, 1):
             if pages:
                 print(f"Worker {i}: {len(pages)} pages - {pages[:5]}{'...' if len(pages) > 5 else ''}")
-            else:
-                print(f"Worker {i}: 0 pages - (idle)")
         
         all_data = []
-        completed_pages = [0]  # Mutable counter
+        completed_pages = [0]
         
         def update_progress(increment, total):
             completed_pages[0] += increment
             if progress_callback:
                 progress_callback(completed_pages[0], total)
         
-        # Run workers in parallel
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = []
             for worker_id, pages in enumerate(worker_pages, 1):
-                if pages:  # Only submit if worker has pages
+                if pages:
                     future = executor.submit(
                         worker_scrape_pages, 
                         worker_id, 
@@ -376,7 +336,6 @@ def scrape_all_pages(pages_list=None, progress_callback=None, num_workers=1, del
                     )
                     futures.append(future)
             
-            # Collect results as they complete
             for future in as_completed(futures):
                 try:
                     worker_data = future.result()

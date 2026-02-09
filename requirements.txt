@@ -1,6 +1,6 @@
 streamlit
 pandas
-selenium
+selenium==4.15.2
 beautifulsoup4
 lxml
 webdriver-manager
