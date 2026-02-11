@@ -184,28 +184,64 @@ def show_quarterly_screener():
             company_search = st.text_input("🏢 Company Name", placeholder="Search...", key="screener_company_search")
         
         with col2:
-            price_min = float(df['Price'].min()) if 'Price' in df.columns and df['Price'].notna().any() else 0.0
-            price_max = float(df['Price'].max()) if 'Price' in df.columns and df['Price'].notna().any() else 10000.0
-            price_range = st.slider("💰 Price (₹)", price_min, price_max, (price_min, price_max), key="screener_price")
+            st.markdown("💰 **Price (₹)**")
+            price_data_min = float(df['Price'].min()) if 'Price' in df.columns and df['Price'].notna().any() else 0.0
+            price_data_max = float(df['Price'].max()) if 'Price' in df.columns and df['Price'].notna().any() else 10000.0
+            price_col1, price_col2 = st.columns(2)
+            with price_col1:
+                price_min = st.number_input("Minimum", value=price_data_min, min_value=0.0, key="screener_price_min", label_visibility="visible")
+            with price_col2:
+                price_max = st.number_input("Maximum", value=price_data_max, min_value=0.0, key="screener_price_max", label_visibility="visible")
+            price_range = (price_min, price_max)
         
         with col3:
-            mcap_min = float(df['Market_Cap'].min()) if 'Market_Cap' in df.columns and df['Market_Cap'].notna().any() else 0.0
-            mcap_max = float(df['Market_Cap'].max()) if 'Market_Cap' in df.columns and df['Market_Cap'].notna().any() else 50000.0
-            mcap_range = st.slider("📈 Market Cap (Cr)", mcap_min, mcap_max, (mcap_min, mcap_max), key="screener_mcap")
+            st.markdown("📈 **Market Cap (Cr)**")
+            mcap_data_min = float(df['Market_Cap'].min()) if 'Market_Cap' in df.columns and df['Market_Cap'].notna().any() else 0.0
+            mcap_data_max = float(df['Market_Cap'].max()) if 'Market_Cap' in df.columns and df['Market_Cap'].notna().any() else 50000.0
+            mcap_col1, mcap_col2 = st.columns(2)
+            with mcap_col1:
+                mcap_min = st.number_input("Minimum", value=mcap_data_min, min_value=0.0, key="screener_mcap_min", label_visibility="visible")
+            with mcap_col2:
+                mcap_max = st.number_input("Maximum", value=mcap_data_max, min_value=0.0, key="screener_mcap_max", label_visibility="visible")
+            mcap_range = (mcap_min, mcap_max)
         
         col5, col6, col7, col8 = st.columns(4)
         
         with col5:
-            sales_yoy = st.slider("📊 Sales YOY %", -100.0, 500.0, (-100.0, 500.0), key="screener_sales")
+            st.markdown("📊 **Sales YOY %**")
+            sales_col1, sales_col2 = st.columns(2)
+            with sales_col1:
+                sales_yoy_min = st.number_input("Minimum", value=-100.0, key="screener_sales_min", label_visibility="visible")
+            with sales_col2:
+                sales_yoy_max = st.number_input("Maximum", value=500.0, key="screener_sales_max", label_visibility="visible")
+            sales_yoy = (sales_yoy_min, sales_yoy_max)
         
         with col6:
-            ebidt_yoy = st.slider("💹 EBIDT YOY %", -100.0, 500.0, (-100.0, 500.0), key="screener_ebidt")
+            st.markdown("💹 **EBIDT YOY %**")
+            ebidt_col1, ebidt_col2 = st.columns(2)
+            with ebidt_col1:
+                ebidt_yoy_min = st.number_input("Minimum", value=-100.0, key="screener_ebidt_min", label_visibility="visible")
+            with ebidt_col2:
+                ebidt_yoy_max = st.number_input("Maximum", value=500.0, key="screener_ebidt_max", label_visibility="visible")
+            ebidt_yoy = (ebidt_yoy_min, ebidt_yoy_max)
         
         with col7:
-            profit_yoy = st.slider("💵 Net Profit YOY %", -100.0, 500.0, (-100.0, 500.0), key="screener_profit")
+            st.markdown("💵 **Net Profit YOY %**")
+            profit_col1, profit_col2 = st.columns(2)
+            with profit_col1:
+                profit_yoy_min = st.number_input("Minimum", value=-100.0, key="screener_profit_min", label_visibility="visible")
+            with profit_col2:
+                profit_yoy_max = st.number_input("Maximum", value=500.0, key="screener_profit_max", label_visibility="visible")
+            profit_yoy = (profit_yoy_min, profit_yoy_max)
         
         with col8:
-            eps_yoy = st.slider("📉 EPS YOY %", -100.0, 500.0, (-100.0, 500.0), key="screener_eps")
+            st.markdown("📉 **EPS YOY %**")
+            eps_col1, eps_col2 = st.columns(2)
+            with eps_col1:
+                eps_yoy_min = st.number_input("Minimum", value=-100.0, key="screener_eps_min", label_visibility="visible")
+            with eps_col2:
+                eps_yoy_max = st.number_input("Maximum", value=500.0, key="screener_eps_max", label_visibility="visible")
+            eps_yoy = (eps_yoy_min, eps_yoy_max)
         
         # Apply filters
         filtered_df = df.copy()
